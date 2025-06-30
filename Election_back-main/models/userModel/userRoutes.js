@@ -1,0 +1,10 @@
+const router = require('express').Router()
+const controller= require('./userController')
+const {verifyUser}= require('../../middlewares/auth')
+router.post('/register',controller.Register)
+router.post('/login',controller.Login)
+router.post('/get_all_users',verifyUser,controller.GetAllUsers)
+router.post('/get_user',verifyUser,controller.GetUser)
+router.post('/delete_user/:id',verifyUser,controller.DeleteUser)
+router.put('/update_user/:id',verifyUser,controller.UpdateUser)
+module.exports = router
