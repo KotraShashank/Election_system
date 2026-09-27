@@ -1,0 +1,38 @@
+require('dotenv').config()
+const express = require('express')
+const mongoose = require('mongoose')
+const cors = require('cors')
+const cookieParser = require('cookie-parser')
+const helmet = require('helmet')
+const { HttpError } = require('./utils/http')
+const errorHandler = require('./middlewares/errorHandler')
+const app = express()
+const frontendUrls = new Set((process.env.FRONTEND_URL || 'http://localhost:5173').split(',').map(origin => origin.trim()).filter(Boolean))
+if (process.env.NODE_ENV !== 'production') {
+  frontendUrls.add('http://localhost:5173')
+  frontendUrls.add('http://127.0.0.1:5173')
+}
+app.disable('x-powered-by')
+app.use(helmet())
+app.use(cors({ origin: (origin, callback) => callback(null, !origin || frontendUrls.has(origin)), credentials: true }))
+app.use(express.json({ limit: '32kb' }))
+app.use(cookieParser())
+app.use((req, res, next) => {
+  if (!['GET','HEAD','OPTIONS'].includes(req.method) && req.headers.origin && !frontendUrls.has(req.headers.origin)) return next(new HttpError(403, 'Origin not allowed'))
+  next()
+})
+app.get('/v1/health', (req, res) => res.json({ success: true, database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' }))
+app.use('/v1', require('./models/userModel/userRoutes'))
+app.use('/v1', require('./models/electionModel/electionRoutes'))
+app.use((req, res, next) => next(new HttpError(404, 'Route not found')))
+app.use(errorHandler)
+async function start() {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('JWT_SECRET must be at least 32 characters')
+  if (!process.env.MONGO_URI && !process.env.MONGOURL) throw new Error('MONGO_URI is required')
+  await mongoose.connect(process.env.MONGO_URI || process.env.MONGOURL)
+  const server = app.listen(process.env.PORT || 5678, () => console.log(`API listening on port ${process.env.PORT || 5678}`))
+  const shutdown = () => server.close(() => mongoose.disconnect().then(() => process.exit(0)))
+  process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
+}
+if (require.main === module) start().catch(error => { console.error('Startup failed:', error.message); process.exit(1) })
+module.exports = { app, start }

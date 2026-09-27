@@ -1,0 +1,13 @@
+const router = require('express').Router()
+const c = require('./electionController')
+const { verifyUser } = require('../../middlewares/auth')
+const { authorizeRoles } = require('../../middlewares/authorize')
+router.use(verifyUser)
+router.get('/elections', c.GetAllElections)
+router.get('/elections/:id/results', c.GetResults)
+router.get('/elections/:id', c.GetElectionById)
+router.post('/elections', authorizeRoles('admin'), c.CreateElection)
+router.put('/elections/:id', authorizeRoles('admin'), c.UpdateElection)
+router.delete('/elections/:id', authorizeRoles('admin'), c.DeleteElection)
+router.post('/elections/:id/vote', authorizeRoles('voter'), c.SubmitVote)
+module.exports = router
