@@ -13,6 +13,32 @@ const sample = (voterId, constituency = 'Raipur') => ({ firstName: 'Test', lastN
 const signIn = async id => { const res = await request(app).post('/v1/login').send({ voterId: id, password: 'Password123' }); if (res.status !== 200) throw new Error(`${id}: ${JSON.stringify(res.body)}`); return res.headers['set-cookie'] }
 const candidateData = [{ candidateName: 'Alice', party: 'A' }, { candidateName: 'Bob', party: 'B' }]
 const create = async (start, end, constituency = 'Raipur') => Election.create({ constituency, startAt: start, endAt: end, candidates: candidateData })
+function pauseFirstElectionRead() {
+  const findById = Election.findById
+  let resume
+  let signalRead
+  let signalLoaded
+  let paused = false
+  const reached = new Promise(resolve => { signalRead = resolve })
+  const loaded = new Promise(resolve => { signalLoaded = resolve })
+  const released = new Promise(resolve => { resume = resolve })
+  Election.findById = function(...args) {
+    const result = findById.apply(this, args)
+    if (paused) return result
+    paused = true
+    signalRead()
+    return Promise.resolve(result).then(document => {
+      signalLoaded()
+      return released.then(() => document)
+    })
+  }
+  return {
+    reached,
+    loaded,
+    resume,
+    restore: () => { Election.findById = findById }
+  }
+}
 beforeAll(async () => { mongo = await MongoMemoryServer.create(); await mongoose.connect(mongo.getUri()) })
 afterAll(async () => { await mongoose.disconnect(); if (mongo) await mongo.stop() })
 beforeEach(async () => {
@@ -87,5 +113,62 @@ test('admin updates safe user fields and deletes a voter who has not voted', asy
   expect(updated.body.user.phoneNumber).toBe('0012345678')
   expect(updated.body.user.password).toBeUndefined()
   expect((await request(app).delete(`/v1/users/${target._id}`).set('Cookie', admin)).status).toBe(200)
+  expect(await User.findById(target._id)).toBeNull()
+})
+test('concurrent vote prevents deletion of the participating user', async () => {
+  const target = await User.findOne({ voterId: 'VOTER001' })
+  const gate = pauseFirstElectionRead()
+  try {
+    const voting = request(app).post(`/v1/elections/${election._id}/vote`).set('Cookie', voter).send({ candidateId: String(election.candidates[0]._id) }).then(response => response)
+    await gate.reached
+    await gate.loaded
+    const deletion = await request(app).delete(`/v1/users/${target._id}`).set('Cookie', admin)
+    expect(deletion.status).toBe(409)
+    gate.resume()
+    expect((await voting).status).toBe(200)
+    expect(await User.findById(target._id)).not.toBeNull()
+    const stored = await Election.findById(election._id)
+    expect(stored.voters.map(item => String(item.voterId))).toContain(String(target._id))
+    expect(stored.candidates[0].votes).toBe(1)
+  } finally {
+    gate.resume()
+    gate.restore()
+  }
+})
+test.each(['update', 'delete'])('concurrent vote prevents election %s from applying stale state', async operation => {
+  const upcoming = await create(new Date(Date.now()+120000), new Date(Date.now()+240000))
+  const update = { constituency: 'Bilaspur', startAt: new Date(Date.now()+180000), endAt: new Date(Date.now()+300000), candidates: [{ candidateName: 'Carol', party: 'C' }, { candidateName: 'Dan', party: 'D' }] }
+  const path = `/v1/elections/${upcoming._id}`
+  const gate = pauseFirstElectionRead()
+  try {
+    const mutation = operation === 'update'
+      ? request(app).put(path).set('Cookie', admin).send(update).then(response => response)
+      : request(app).delete(path).set('Cookie', admin).then(response => response)
+    await gate.reached
+    await gate.loaded
+    await Election.updateOne({ _id: upcoming._id }, { $set: { startAt: new Date(Date.now()-1000), endAt: new Date(Date.now()+60000) } })
+    const vote = await request(app).post(`${path}/vote`).set('Cookie', voter).send({ candidateId: String(upcoming.candidates[0]._id) })
+    expect(vote.status).toBe(200)
+    gate.resume()
+    expect((await mutation).status).toBe(409)
+    const stored = await Election.findById(upcoming._id)
+    expect(stored).not.toBeNull()
+    expect(stored.voters.map(item => String(item.voterId))).toContain(String((await User.findOne({ voterId: 'VOTER001' }))._id))
+    expect(stored.candidates[0].votes).toBe(1)
+  } finally {
+    gate.resume()
+    gate.restore()
+  }
+})
+test('a stale deletion claim expires and the old boolean field is ignored', async () => {
+  const target = await User.findOne({ voterId: 'OTHER001' })
+  await User.collection.updateOne({ _id: target._id }, {
+    $set: {
+      deletionPending: true,
+      operationClaim: { token: 'expired-claim', type: 'deletion', expiresAt: new Date(Date.now()-60000) }
+    }
+  })
+  const response = await request(app).delete(`/v1/users/${target._id}`).set('Cookie', admin)
+  expect(response.status).toBe(200)
   expect(await User.findById(target._id)).toBeNull()
 })

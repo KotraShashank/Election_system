@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken')
 const { registration, objectId, text } = require('../../middlewares/validation')
 const { voterId, constituency, constituencyKey } = require('../../utils/normalize')
 const { HttpError, asyncHandler } = require('../../utils/http')
+const { claimUserOperation, activeClaimFilter, releaseUserOperation } = require('../../utils/userOperationClaim')
 
 const publicUser = user => ({
   id: String(user._id),
@@ -212,16 +213,38 @@ exports.DeleteUser = asyncHandler(async (req, res) => {
     throw new HttpError(403, 'Admin accounts cannot be deleted here')
   }
 
-  if (await Election.exists({ 'voters.voterId': user._id })) {
-    throw new HttpError(409, 'Cannot delete a user who has voted')
+  const token = await claimUserOperation(user._id, 'deletion')
+
+  if (!token) {
+    throw new HttpError(
+      409,
+      'User is currently being processed; retry the request'
+    )
   }
 
-  await user.deleteOne()
+  try {
+    if (await Election.exists({ 'voters.voterId': user._id })) {
+      throw new HttpError(409, 'Cannot delete a user who has voted')
+    }
 
-  res.json({
-    success: true,
-    message: 'User deleted'
-  })
+    const deleted = await User.deleteOne(
+      activeClaimFilter(user._id, token, 'deletion')
+    )
+
+    if (!deleted.deletedCount) {
+      throw new HttpError(
+        409,
+        'User changed while deletion was in progress; retry the request'
+      )
+    }
+
+    res.json({
+      success: true,
+      message: 'User deleted'
+    })
+  } finally {
+    await releaseUserOperation(user._id, token)
+  }
 })
 
 exports.publicUser = publicUser
