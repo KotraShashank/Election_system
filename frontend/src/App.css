@@ -1,0 +1,14 @@
+.page-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.section-stack { display:grid; gap:20px; }
+.muted { color:var(--text-2); }
+.small { font-size:12px; }
+.result-row { display:flex; justify-content:space-between; gap:12px; padding:14px 0; border-bottom:1px solid var(--border); }
+.result-row:last-child { border-bottom:0; }
+.form-card { max-width:760px; }
+.auth-right { overflow-y:auto; }
+.auth-page .auth-form { margin:auto 0; }
+.candidate-card { width:100%; text-align:left; }
+.candidate-card:disabled { cursor:default; }
+.election-card { display:block; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid var(--white); outline-offset:2px; }
+@media(max-width:600px){.stats-grid{grid-template-columns:1fr}.landing-cta{flex-direction:column}.auth-right{padding:28px 20px}}
